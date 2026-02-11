@@ -1,221 +1,143 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session, select
+from pydantic import BaseModel, Field
+from replaycore.models import Scenario, new_id
 
-from .db import get_session, init_db
-from .models import ApiCall, DiffReport, ObjectState, PaymentIntent, Run, Scenario, WebhookDelivery
-from .services import create_run, generate_diff, upsert_intent, validate_scenario_config
+from .state import AppState
 
-app = FastAPI(title="ReplayLab Control Plane")
-subscribers: list[asyncio.Queue] = []
+
+class ScenarioCreate(BaseModel):
+    name: str
+    description: str = ""
+    seed: int = 1
+    target_url: str
+    chaos_profile: dict[str, Any] = Field(default_factory=dict)
+    expected_invariants: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    seed: int | None = None
+    target_url: str | None = None
+    chaos_profile: dict[str, Any] | None = None
+    expected_invariants: dict[str, Any] | None = None
+
+
+class RunRequest(BaseModel):
+    seed: int | None = None
+
+
+app = FastAPI(title="Webhook Reliability & Idempotency Lab")
+state = AppState(Path(".replaylab/replaylab.sqlite3"))
 
 
 @app.on_event("startup")
 def startup() -> None:
-    init_db()
+    state.ensure_seed_data()
 
 
 @app.get("/healthz")
-def healthz() -> dict:
+def healthz() -> dict[str, str]:
     return {"status": "ok", "service": "replaylab-api"}
 
 
 @app.get("/api/scenarios")
-def list_scenarios(session: Session = Depends(get_session)) -> list[Scenario]:
-    return session.exec(select(Scenario).where(Scenario.deleted == False)).all()
+def list_scenarios() -> list[dict[str, Any]]:
+    return [asdict(item) for item in state.storage.list_scenarios()]
 
 
 @app.post("/api/scenarios")
-def create_scenario(payload: dict, session: Session = Depends(get_session)) -> Scenario:
-    errors = validate_scenario_config(payload.get("config_json", {}))
-    if errors:
-        raise HTTPException(status_code=422, detail={"errors": errors})
-    scenario = Scenario(**payload)
-    session.add(scenario)
-    session.commit()
-    session.refresh(scenario)
-    return scenario
+def create_scenario(payload: ScenarioCreate) -> dict[str, Any]:
+    scenario = Scenario(id=new_id("scn"), **payload.model_dump())
+    state.storage.create_scenario(scenario)
+    return asdict(scenario)
 
 
 @app.get("/api/scenarios/{scenario_id}")
-def get_scenario(scenario_id: str, session: Session = Depends(get_session)) -> Scenario:
-    scenario = session.get(Scenario, scenario_id)
-    if not scenario or scenario.deleted:
-        raise HTTPException(404, detail={"error": "scenario_not_found"})
-    return scenario
+def get_scenario(scenario_id: str) -> dict[str, Any]:
+    scenario = state.storage.get_scenario(scenario_id)
+    if not scenario:
+        raise HTTPException(404, "scenario_not_found")
+    return asdict(scenario)
 
 
 @app.put("/api/scenarios/{scenario_id}")
-def update_scenario(scenario_id: str, payload: dict, session: Session = Depends(get_session)) -> Scenario:
-    scenario = get_scenario(scenario_id, session)
-    for k, v in payload.items():
-        setattr(scenario, k, v)
-    scenario.updated_at = datetime.utcnow()
-    session.add(scenario)
-    session.commit()
-    session.refresh(scenario)
-    return scenario
+def update_scenario(scenario_id: str, payload: ScenarioUpdate) -> dict[str, Any]:
+    scenario = state.storage.update_scenario(
+        scenario_id,
+        {key: value for key, value in payload.model_dump().items() if value is not None},
+    )
+    if not scenario:
+        raise HTTPException(404, "scenario_not_found")
+    return asdict(scenario)
 
 
 @app.delete("/api/scenarios/{scenario_id}")
-def delete_scenario(scenario_id: str, session: Session = Depends(get_session)) -> dict:
-    scenario = get_scenario(scenario_id, session)
-    scenario.deleted = True
-    session.add(scenario)
-    session.commit()
+def delete_scenario(scenario_id: str) -> dict[str, bool]:
+    deleted = state.storage.delete_scenario(scenario_id)
+    if not deleted:
+        raise HTTPException(404, "scenario_not_found")
     return {"deleted": True}
 
 
 @app.post("/api/scenarios/{scenario_id}/run")
-async def run_scenario(scenario_id: str, payload: dict | None = None, session: Session = Depends(get_session)) -> Run:
-    scenario = get_scenario(scenario_id, session)
-    run = create_run(session, scenario, seed=(payload or {}).get("seed"))
-    event = {"type": "run.completed", "run_id": run.id, "status": run.status}
-    for q in subscribers:
-        await q.put(event)
-    return run
+async def run_scenario(scenario_id: str, payload: RunRequest | None = None) -> dict[str, Any]:
+    scenario = state.storage.get_scenario(scenario_id)
+    if not scenario:
+        raise HTTPException(404, "scenario_not_found")
+    run = await state.engine.execute_run(scenario, seed=payload.seed if payload else None)
+    return asdict(run)
 
 
 @app.get("/api/runs")
-def list_runs(session: Session = Depends(get_session)) -> list[Run]:
-    return session.exec(select(Run)).all()
+def list_runs(scenario_id: str | None = None) -> list[dict[str, Any]]:
+    return [asdict(item) for item in state.storage.list_runs(scenario_id)]
 
 
 @app.get("/api/runs/{run_id}")
-def get_run(run_id: str, session: Session = Depends(get_session)) -> Run:
-    run = session.get(Run, run_id)
+def get_run(run_id: str) -> dict[str, Any]:
+    run = state.storage.get_run(run_id)
     if not run:
-        raise HTTPException(404, detail={"error": "run_not_found"})
-    return run
+        raise HTTPException(404, "run_not_found")
+    return asdict(run)
 
 
-@app.get("/api/runs/{run_id}/events")
-def run_events(run_id: str, limit: int = 100, session: Session = Depends(get_session)) -> list[dict]:
-    hooks = session.exec(select(WebhookDelivery).where(WebhookDelivery.run_id == run_id)).all()[:limit]
-    return [{"kind": "webhook", "event_type": h.event_type, "correlation_id": h.correlation_id} for h in hooks]
+@app.get("/api/runs/{run_id}/deliveries")
+def list_deliveries(run_id: str) -> list[dict[str, Any]]:
+    return [asdict(item) for item in state.storage.list_deliveries(run_id)]
 
 
-@app.get("/api/runs/{run_id}/api-calls")
-def api_calls(run_id: str, session: Session = Depends(get_session)) -> list[ApiCall]:
-    return session.exec(select(ApiCall).where(ApiCall.run_id == run_id)).all()
+@app.get("/api/runs/{run_id}/findings")
+def list_findings(run_id: str) -> list[dict[str, Any]]:
+    return [asdict(item) for item in state.storage.list_findings(run_id)]
 
 
-@app.get("/api/runs/{run_id}/webhooks")
-def webhooks(run_id: str, session: Session = Depends(get_session)) -> list[WebhookDelivery]:
-    return session.exec(select(WebhookDelivery).where(WebhookDelivery.run_id == run_id)).all()
+@app.get("/api/runs/{run_id}/artifacts")
+def list_artifacts(run_id: str) -> list[dict[str, Any]]:
+    return [asdict(item) for item in state.storage.list_artifacts(run_id)]
 
 
-@app.get("/api/runs/{run_id}/states")
-def states(run_id: str, session: Session = Depends(get_session)) -> list[ObjectState]:
-    return session.exec(select(ObjectState).where(ObjectState.run_id == run_id)).all()
+@app.post("/api/runs/{run_id}/cancel")
+def cancel_run(run_id: str) -> dict[str, bool]:
+    run = state.storage.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run_not_found")
+    state.storage.update_run(run_id, status="cancelled")
+    return {"cancelled": True}
 
 
-@app.post("/api/diffs")
-def create_diff(payload: dict, session: Session = Depends(get_session)) -> DiffReport:
-    return generate_diff(session, payload["run_id_a"], payload["run_id_b"])
-
-
-@app.get("/api/diffs/{diff_id}")
-def get_diff(diff_id: str, session: Session = Depends(get_session)) -> DiffReport:
-    diff = session.get(DiffReport, diff_id)
-    if not diff:
-        raise HTTPException(404, detail={"error": "diff_not_found"})
-    return diff
-
-
-@app.get("/api/metrics/overview")
-def metrics(session: Session = Depends(get_session)) -> dict:
-    runs = session.exec(select(Run)).all()
-    failed = len([r for r in runs if r.status == "failed"])
-    return {"runs": len(runs), "failures": failed, "p95_api_latency": 40, "webhook_retries": 0}
-
-
-@app.websocket("/ws/live")
-async def ws_live(ws: WebSocket) -> None:
-    await ws.accept()
-    queue: asyncio.Queue = asyncio.Queue()
-    subscribers.append(queue)
-    try:
-        while True:
-            event = await queue.get()
-            await ws.send_json(event)
-    finally:
-        subscribers.remove(queue)
-
-
-@app.get("/sse/live")
-async def sse_live() -> StreamingResponse:
-    async def event_stream():
-        q: asyncio.Queue = asyncio.Queue()
-        subscribers.append(q)
-        try:
-            while True:
-                item = await q.get()
-                yield f"data: {json.dumps(item)}\n\n"
-        finally:
-            subscribers.remove(q)
+@app.get("/api/stream")
+async def stream() -> StreamingResponse:
+    async def event_stream() -> Any:
+        async for event in state.bus.stream():
+            yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-@app.post("/v1/payment_intents")
-def create_payment_intent(
-    payload: dict,
-    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    session: Session = Depends(get_session),
-) -> dict:
-    intent = upsert_intent(session, idempotency_key, payload["amount"], payload.get("currency", "usd"))
-    session.add(
-        ApiCall(
-            run_id="gateway",
-            service="gateway",
-            method="POST",
-            path="/v1/payment_intents",
-            request_json=payload,
-            response_json={"id": intent.id, "status": intent.status},
-            status_code=200,
-            idempotency_key=idempotency_key,
-            correlation_id=f"corr_{intent.id}",
-        )
-    )
-    session.commit()
-    return {"id": intent.id, "status": intent.status}
-
-
-@app.post("/v1/payment_intents/{intent_id}/confirm")
-def confirm_intent(intent_id: str, session: Session = Depends(get_session)) -> dict:
-    intent = session.get(PaymentIntent, intent_id)
-    if not intent:
-        raise HTTPException(404, detail={"error": "intent_not_found"})
-    intent.status = "processing" if intent.status == "requires_confirmation" else "succeeded"
-    session.add(intent)
-    session.commit()
-    return {"id": intent.id, "status": intent.status}
-
-
-@app.post("/v1/customers")
-def customers() -> dict:
-    return {"id": "cus_demo"}
-
-
-@app.post("/v1/refunds")
-def refunds() -> dict:
-    return {"id": "re_demo", "status": "succeeded"}
-
-
-@app.post("/v1/events")
-def events() -> dict:
-    return {"ok": True}
-
-
-@app.get("/internal/state")
-def internal_state(debug: bool = True) -> dict:
-    if not debug:
-        raise HTTPException(403, detail={"error": "disabled"})
-    return {"state": "available"}

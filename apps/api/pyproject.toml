@@ -1,3 +1,32 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stripe-replaylab-api"
+version = "0.1.0"
+description = "ReplayLab control plane API"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "pytest-cov>=5.0.0",
+  "ruff>=0.8.0"
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

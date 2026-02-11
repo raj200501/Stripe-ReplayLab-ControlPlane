@@ -1,7 +1,8 @@
-.PHONY: bootstrap verify coverage loc demo
+.PHONY: bootstrap verify coverage loc demo seed replay reset
 
 bootstrap:
 	python3 -m venv .venv
+	. .venv/bin/activate && python -m pip install -e ./packages/replaycore -e ./packages/webhooksim -e ./apps/api[dev]
 	cd apps/dashboard && npm ci
 
 verify:
@@ -9,9 +10,17 @@ verify:
 
 coverage: verify
 
+seed:
+	PYTHONPATH=apps/api:packages/replaycore/src:packages/webhooksim/src python -m apps.runner seed
+
 demo:
-	@echo "Deterministic demo run"
-	PYTHONPATH=apps/api python3 -c "from app.services import Scenario, simulate_run; s=Scenario(id='demo', name='demo', config_json={'webhook_duplicate_probability':1.0}); print(simulate_run(s,42))"
+	PYTHONPATH=apps/api:packages/replaycore/src:packages/webhooksim/src python -m apps.runner demo
+
+replay:
+	PYTHONPATH=apps/api:packages/replaycore/src:packages/webhooksim/src python -m apps.runner replay $(RUN_ID)
+
+reset:
+	rm -rf .replaylab/
 
 loc:
 	python3 scripts/loc.py
