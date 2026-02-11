@@ -3,17 +3,22 @@ on: [push, pull_request]
 jobs:
   verify:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.11']
-        node-version: ['20']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: ${{ matrix.python-version }}, cache: 'pip' }
+        with:
+          python-version: '3.11'
       - uses: actions/setup-node@v4
-        with: { node-version: ${{ matrix.node-version }}, cache: 'npm', cache-dependency-path: apps/dashboard/package-lock.json }
-      - run: python -m venv .venv
-      - run: . .venv/bin/activate && pip install -e ./apps/api[dev]
-      - run: cd apps/dashboard && npm ci
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/dashboard/package-lock.json
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --no-build-isolation -e ./packages/replaycore -e ./packages/webhooksim -e ./apps/api[dev]
       - run: make verify
+      - run: |
+          python -m uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port 8001 &
+          PID=$!
+          sleep 4
+          python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=5).read().decode())"
+          kill $PID

@@ -1,1 +1,7 @@
-body{font-family:Inter,system-ui,sans-serif;margin:0;background:#f5f7fb;color:#1f2340}.shell{display:flex;min-height:100vh}.sidebar{width:260px;background:#fff;border-right:1px solid #e6e8ef;padding:16px}.content{flex:1;padding:20px}.nav a{display:block;padding:6px 0;color:#4c4f66;text-decoration:none}.card{background:#fff;border:1px solid #e6e8ef;border-radius:8px;padding:12px;margin-bottom:12px}table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #eceef5;padding:8px;text-align:left}
+body{margin:0;font-family:Inter,system-ui,sans-serif;background:linear-gradient(#f8fafc,#eef2ff);color:#0f172a}
+.layout{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+aside{padding:20px;background:#fff;border-right:1px solid #e2e8f0}
+aside nav{display:flex;flex-direction:column;gap:8px}
+main{padding:24px}.palette{position:fixed;left:20%;top:80px;background:white;padding:12px;border:1px solid #ddd;display:grid;gap:6px}
+section{background:white;border:1px solid #e2e8f0;border-radius:12px;padding:16px}
+input{display:block;margin:8px 0;padding:8px}

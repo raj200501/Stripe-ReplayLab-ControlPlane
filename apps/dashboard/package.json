@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "lint": "node -e \"console.log('lint ok')\"",
-    "typecheck": "node -e \"console.log('typecheck ok')\"",
+    "lint": "node scripts/lint.js",
+    "typecheck": "node scripts/typecheck.js",
     "test:coverage": "node --test test.js",
-    "build": "node -e \"console.log('build ok')\""
+    "build": "node scripts/build.js"
   }
 }

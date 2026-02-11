@@ -1,24 +1,31 @@
-# Stripe-ReplayLab-Integration-Chaos-ControlPlane
+# Stripe ReplayLab Control Plane
 
-ReplayLab is a local-first integration reliability lab for Stripe-like flows. It records API calls and webhooks, replays deterministic seeded runs, and generates diff + diagnosis reports.
+Webhook Reliability & Idempotency Lab for Stripe-style integrations.
 
-## Quickstart (verified)
-1. `make bootstrap`
-2. `make verify`
-3. `make demo`
-4. Open `http://localhost:5173`
+## Why this exists
+Teams shipping webhook integrations struggle to prove idempotency under duplicates, retries, and out-of-order delivery. ReplayLab provides deterministic scenario generation, replay execution, and diagnostics with actionable fix patterns.
 
 ## Architecture
-- `apps/api`: FastAPI control plane + gateway simulation endpoints
-- `apps/runner`: deterministic demo run generator
-- `apps/dashboard`: React control-plane dashboard with 12 pages
 
-## Deterministic replay
-Each run uses a seed. Chaos behavior (ordering, duplicates, failures) comes from seeded PRNG for reproducibility.
+```
+Dashboard (React/Vite) ---> FastAPI Control Plane ---> replaycore engine ---> Merchant Sandbox
+       ^                           |                    |                      |
+       |                           v                    v                      v
+       +------- SSE live stream ---+             SQLite runs/findings      SQLite state
+```
 
-## Interview talking points
-- Deterministic reliability harness
-- Webhook ordering + duplicate diagnosis
-- Idempotency semantics
-- State-machine testing
-- CI coverage gates and verified quickstarts
+## Quickstart
+
+```bash
+make bootstrap
+make verify
+make demo
+```
+
+## Notable capabilities
+- Deterministic seeds produce reproducible runs.
+- Real merchant simulator with bug toggles for idempotency/order/signature failure modes.
+- Diagnostics with findings + suggested fixes + replay command.
+- 10+ dashboard pages with routing, filtering, validation, and live command palette.
+
+See `docs/architecture.md`, `docs/api.md`, `docs/demo.md`.
