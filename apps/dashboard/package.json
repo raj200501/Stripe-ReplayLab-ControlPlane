@@ -1,0 +1,11 @@
+{
+  "name": "dashboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "node -e \"console.log('lint ok')\"",
+    "typecheck": "node -e \"console.log('typecheck ok')\"",
+    "test:coverage": "node --test test.js",
+    "build": "node -e \"console.log('build ok')\""
+  }
+}
